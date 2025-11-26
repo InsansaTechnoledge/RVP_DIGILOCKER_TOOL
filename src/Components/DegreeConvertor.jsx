@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import ExcelUploadSection from "./ExcelUploadSection";
 import { parseAndTrimExcel } from "../utils/excelTrimHelper";
 
@@ -8,10 +8,16 @@ const DegreeConvertor = ({
   setDegreeFile,
   setDegreeData,
 }) => {
-  
   const [downloadUrl, setDownloadUrl] = useState(null);
-  const [downloadName, setDownloadName] = useState("degree.xlsx");
+  const [downloadName, setDownloadName] = useState("degree_trimmed.zip");
   const [error, setError] = useState("");
+
+  // Revoke object URLs when they change / on unmount to avoid leaks
+  useEffect(() => {
+    return () => {
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    };
+  }, [downloadUrl]);
 
   const handleFileUpload = async (e) => {
     setError("");
@@ -20,16 +26,27 @@ const DegreeConvertor = ({
 
     try {
       setDegreeFile?.(file);
-      const { rows, blobUrl, downloadName } = await parseAndTrimExcel(file);
+
+      // Ask helper to produce ZIP (CSV inside)
+      const { rows, blobUrl, downloadName: outName } = await parseAndTrimExcel(file, {
+        archive: "zip",
+      });
+
       setDegreeData?.(rows);
+
+      // Revoke previous URL if any
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+
       setDownloadUrl(blobUrl);
-      setDownloadName(downloadName);
+      setDownloadName(outName || "degree_trimmed.zip");
     } catch (err) {
       console.error(err);
       setError(err.message || "Failed to process file.");
       setDegreeFile?.(null);
       setDegreeData?.([]);
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
       setDownloadUrl(null);
+      setDownloadName("degree_trimmed.zip");
     }
   };
 
@@ -38,7 +55,9 @@ const DegreeConvertor = ({
       <div className="upload-section">
         <h2 className="secondary-heading mb-2">Upload Excel File</h2>
         <p className="file-info">
-          Select a file to upload and process. Supported formats: CSV, XLS, XLSX
+          Supported formats: <strong>CSV, XLS, XLSX</strong>. Output will be a{" "}
+          <strong>.zip</strong> containing a trimmed <strong>.csv</strong> with{" "}
+          <code>DOB</code> and <code>DOI</code> as <strong>DD/MM/YYYY</strong> text.
         </p>
       </div>
 

@@ -30,22 +30,36 @@ export function findStudentKey(actualKeys) {
    Flexible aliases for totals / SGPA / marks masking
    ========================= */
 
+// add these to HEADER_ALIASES
+// Add once (if not already present)
 const HEADER_ALIASES = {
-  TOTAL_CREDIT: ["TOTAL_CREDIT", "TOTAL_CREDITS", "TOT_CREDIT", "SUM_CREDIT", "TOT_CR"],
+  TOTAL_CREDIT: ["TOTAL_CREDIT","TOTAL_CREDITS","TOT_CREDIT","SUM_CREDIT","TOT_CR"],
   TOTAL_CREDIT_POINT: [
-    "TOTAL_CREDIT_POINT", "TOTAL_CREDIT_POINTS",
-    "TOT_CREDIT_POINTS", "CREDIT_POINTS", "TOTAL_POINTS", "TOT_CP"
+    "TOTAL_CREDIT_POINT","TOTAL_CREDIT_POINTS","TOT_CREDIT_POINTS","CREDIT_POINTS","TOTAL_POINTS","TOT_CP"
   ],
-  SGPA: ["SGPA", "SEM_SGPA", "SemSGPA"],
+  // NEW
+  TOTAL_DUE_CREDITS: ["TOTAL_DUE_CREDITS","TOT_DUE_CREDITS","DUE_CREDITS","DUE_CR"],
+  TOTAL_DUE_CREDIT_POINTS: ["TOTAL_DUE_CREDIT_POINTS","TOT_DUE_CP","DUE_CREDIT_POINTS","DUE_POINTS","DUE_CP"],
 
-  // For masking (***): treat these as potential marks columns
-  GRAND_TOT_MRKS: [
-    "GRAND_TOT_MRKS", "GRAND_TOTAL_MARKS", "GRAND_TOTAL", "GRAND_TOT", "GRAND_MARKS"
-  ],
-  TOT_MRKS: [
-    "TOT_MRKS", "TOTAL_MARKS", "TOT_MARKS", "TOTAL_MRKS"
-  ],
+  SGPA: ["SGPA","SEM_SGPA","SemSGPA"],
+  GRAND_TOT_MRKS: ["GRAND_TOT_MRKS","GRAND_TOTAL_MARKS","GRAND_TOTAL","GRAND_TOT","GRAND_MARKS"],
+  TOT_MRKS: ["TOT_MRKS","TOTAL_MARKS","TOT_MARKS","TOTAL_MRKS"],
 };
+
+export function resolveHeaderMapFromRows(rows) {
+  if (!rows?.length) return {};
+  const keys = Object.keys(rows[0]);
+  return {
+    TOTAL_CREDIT: findFirstKey(keys, HEADER_ALIASES.TOTAL_CREDIT),
+    TOTAL_CREDIT_POINT: findFirstKey(keys, HEADER_ALIASES.TOTAL_CREDIT_POINT),
+    TOTAL_DUE_CREDITS: findFirstKey(keys, HEADER_ALIASES.TOTAL_DUE_CREDITS),
+    TOTAL_DUE_CREDIT_POINTS: findFirstKey(keys, HEADER_ALIASES.TOTAL_DUE_CREDIT_POINTS),
+    SGPA: findFirstKey(keys, HEADER_ALIASES.SGPA),
+    GRAND_TOT_MRKS: findFirstKey(keys, HEADER_ALIASES.GRAND_TOT_MRKS),
+    TOT_MRKS: findFirstKey(keys, HEADER_ALIASES.TOT_MRKS),
+  };
+}
+
 
 function findFirstKey(actualKeys, candidates) {
   const nk = actualKeys.map(normalize);
@@ -68,18 +82,24 @@ export function findKeyCI(keys, name) {
  * Resolve commonly-used headers from the first row of data.
  * Now includes GRAND_TOT_MRKS and TOT_MRKS for masking logic.
  */
-export function resolveHeaderMapFromRows(rows) {
-  if (!rows?.length) return {};
-  const keys = Object.keys(rows[0]);
-  return {
-    TOTAL_CREDIT: findFirstKey(keys, HEADER_ALIASES.TOTAL_CREDIT),
-    TOTAL_CREDIT_POINT: findFirstKey(keys, HEADER_ALIASES.TOTAL_CREDIT_POINT),
-    SGPA: findFirstKey(keys, HEADER_ALIASES.SGPA),
 
-    GRAND_TOT_MRKS: findFirstKey(keys, HEADER_ALIASES.GRAND_TOT_MRKS),
-    TOT_MRKS: findFirstKey(keys, HEADER_ALIASES.TOT_MRKS),
-  };
-}
+// export function resolveHeaderMapFromRows(rows) {
+//   if (!rows?.length) return {};
+//   const keys = Object.keys(rows[0]);
+//   return {
+//     TOTAL_CREDIT:           findFirstKey(keys, HEADER_ALIASES.TOTAL_CREDIT),
+//     TOTAL_CREDIT_POINT:     findFirstKey(keys, HEADER_ALIASES.TOTAL_CREDIT_POINT),
+
+//     // NEW
+//     TOTAL_DUE_CREDITS:         findFirstKey(keys, HEADER_ALIASES.TOTAL_DUE_CREDITS),
+//     TOTAL_DUE_CREDIT_POINTS:   findFirstKey(keys, HEADER_ALIASES.TOTAL_DUE_CREDIT_POINTS),
+
+//     SGPA:                   findFirstKey(keys, HEADER_ALIASES.SGPA),
+//     GRAND_TOT_MRKS:         findFirstKey(keys, HEADER_ALIASES.GRAND_TOT_MRKS),
+//     TOT_MRKS:               findFirstKey(keys, HEADER_ALIASES.TOT_MRKS),
+//   };
+// }
+
 
 /* =========================
    File reading
@@ -177,21 +197,74 @@ export function shouldMaskCgpa(row, headerMap) {
  *
  * Throws if the sheet lacks TOTAL_CREDIT / TOTAL_CREDIT_POINT headers.
  */
+/**
+ * Returns:
+ *  - totalCredits / totalCreditPoints: for **CGPA** accumulation (base + due)
+ *  - sgpaOrNull: **SGPA** computed strictly from base totals (no "due" added)
+ */
 export function computeTotalsFromAggregates(studentRows, headerMap) {
+  // SGPA requires base totals to exist
   if (!headerMap.TOTAL_CREDIT || !headerMap.TOTAL_CREDIT_POINT) {
-    throw new Error("Sheet must contain TOTAL_CREDIT and TOTAL_CREDIT_POINT columns.");
+    throw new Error("Sheet must contain TOTAL_CREDIT and TOTAL_CREDIT_POINT for SGPA.");
   }
 
-  // Find any row that has numeric totals
+  const num = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
   for (const r of studentRows) {
-    const tc = Number(r[headerMap.TOTAL_CREDIT]);
-    const tcp = Number(r[headerMap.TOTAL_CREDIT_POINT]);
-    if (!Number.isNaN(tc) && !Number.isNaN(tcp) && tc > 0) {
-      const sgpa = Number((tcp / tc).toFixed(2));
-      return { totalCredits: tc, totalCreditPoints: tcp, sgpaOrNull: sgpa };
+    // Base (for SGPA)
+    const baseCredits = num(r[headerMap.TOTAL_CREDIT]);
+    const basePoints  = num(r[headerMap.TOTAL_CREDIT_POINT]);
+
+    // Compute SGPA from base only
+    const sgpa =
+      baseCredits > 0 ? Number((basePoints / baseCredits).toFixed(2)) : null;
+
+    // Add DUE only for CGPA totals
+    const dueCredits = headerMap.TOTAL_DUE_CREDITS
+      ? num(r[headerMap.TOTAL_DUE_CREDITS])
+      : 0;
+    const duePoints = headerMap.TOTAL_DUE_CREDIT_POINTS
+      ? num(r[headerMap.TOTAL_DUE_CREDIT_POINTS])
+      : 0;
+
+    const cgpaCredits = baseCredits;
+    const cgpaPoints  = basePoints + duePoints;
+
+    console.log("check", cgpaCredits , cgpaPoints , dueCredits, duePoints);
+    
+
+    // If there is any meaningful total, return combined for CGPA + base-only SGPA
+    if (cgpaCredits > 0 || cgpaPoints > 0 || sgpa !== null) {
+      return {
+        totalCredits: cgpaCredits,        // use these for CGPA accumulation
+        totalCreditPoints: cgpaPoints,    // use these for CGPA accumulation
+        sgpaOrNull: sgpa,                 // base-only SGPA
+      };
     }
   }
 
-  // If not found, return zeros (no totals present for that student)
   return { totalCredits: 0, totalCreditPoints: 0, sgpaOrNull: null };
+}
+
+// Weighted CGPA helpers across semesters for a single student
+// Uses perSem entries already stored in semResults (which already include base+due)
+export function computeCgpaTotalsForReg(reg, semResults) {
+  let sumCredits = 0;
+  let sumCreditPoints = 0;
+
+  const semIdxs = Object.keys(semResults).map(Number).sort((a, b) => a - b);
+  for (const s of semIdxs) {
+    const entry = semResults[s]?.[reg];
+    if (!entry) continue;
+    const { totalCredits, totalCreditPoints } = entry;
+    if (!totalCredits || !totalCreditPoints) continue;
+    sumCredits += Number(totalCredits) || 0;
+    sumCreditPoints += Number(totalCreditPoints) || 0;
+  }
+
+  const cgpa = sumCredits ? Number((sumCreditPoints / sumCredits).toFixed(2)) : null;
+  return { sumCredits, sumCreditPoints, cgpa };
 }

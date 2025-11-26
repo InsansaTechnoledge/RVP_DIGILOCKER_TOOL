@@ -12,6 +12,7 @@ import {
   resolveHeaderMapFromRows,
   uppercaseStudentIdsInPlace,
   shouldMaskCgpa,
+  computeCgpaTotalsForReg
 } from "../utils/cgpa-helper";
 
 const CgpaCalculationPage = ({ setCourse, course }) => {
@@ -53,6 +54,38 @@ const CgpaCalculationPage = ({ setCourse, course }) => {
     setMerged(out);
   }
 
+  function sanitizeAsterisksInPlace(rows) {
+    if (!Array.isArray(rows)) return;
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      for (const key of Object.keys(row)) {
+        const val = row[key];
+        if (val == null) continue;
+
+        if (typeof val === "string") {
+          // Remove all '*' characters
+          const noStars = val.replace(/\*/g, "").trim();
+          // If cell had only stars (e.g. "*", "***"), blank it; else keep cleaned text
+          row[key] = noStars === "" ? "" : noStars;
+        }
+      }
+    }
+  }
+
+  // 🔹 Helper: does this row have '*' in ANY column?
+  function rowHasAnyStar(row) {
+    if (!row || typeof row !== "object") return false;
+    for (const val of Object.values(row)) {
+      if (typeof val === "string" && val.includes("*")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Weighted CGPA for one student across all uploaded sems:
+  // CGPA = (Σ total_credit_point) / (Σ total_credit)
+
   const handleUpload = async (e, semIndex) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -68,7 +101,7 @@ const CgpaCalculationPage = ({ setCourse, course }) => {
       const { rows, wsName } = await readSheetToObjects(file);
       if (!rows.length) throw new Error("Empty sheet.");
 
-      // Uppercase the detected student ID column in-place (REG_NO/REGN_NO/RROLL/etc.)
+      // 1) UPPERCASE IDs on the ORIGINAL rows (keep stars here)
       const studentKey =
         uppercaseStudentIdsInPlace(rows) || findStudentKey(Object.keys(rows[0]));
       if (!studentKey)
@@ -76,24 +109,28 @@ const CgpaCalculationPage = ({ setCourse, course }) => {
           "Student key not found (REGN_NO/RROLL/ROLL_NO/ENROLLMENT/REG_NO...)."
         );
 
-      // resolve totals headers (aggregates)
-      const headerMap = resolveHeaderMapFromRows(rows);
+      // 2) Make a SEPARATE copy for maths & clean stars THERE
+      const calcRows = rows.map((r) => ({ ...r }));
+      sanitizeAsterisksInPlace(calcRows); // <- only affects calcRows
+
+      // 3) Resolve headers from calcRows
+      const headerMap = resolveHeaderMapFromRows(calcRows);
       if (!headerMap.TOTAL_CREDIT || !headerMap.TOTAL_CREDIT_POINT) {
         throw new Error(
           "Sheet must contain TOTAL_CREDIT and TOTAL_CREDIT_POINT columns."
         );
       }
 
-      // group rows per student (IDs already uppercased)
+      // 4) Group by student using calcRows (IDs already uppercased)
       const byStudent = {};
-      for (const r of rows) {
+      for (const r of calcRows) {
         const id = r[studentKey];
         if (!id) continue;
         if (!byStudent[id]) byStudent[id] = [];
         byStudent[id].push(r);
       }
 
-      // Build per-sem entries by reading pre-aggregated totals
+      // 5) Build per-sem entries using sanitized totals
       const perSem = {};
       for (const [reg, list] of Object.entries(byStudent)) {
         const { totalCredits, totalCreditPoints, sgpaOrNull } =
@@ -101,24 +138,23 @@ const CgpaCalculationPage = ({ setCourse, course }) => {
         perSem[reg] = {
           totalCredits,
           totalCreditPoints,
-          sgpa: sgpaOrNull, // may be null if not derivable
+          sgpa: sgpaOrNull,
         };
       }
 
-      // store this semester’s result
+      // 6) Store this semester’s result
       setSemResults((prev) => {
         const next = { ...prev, [semIndex]: perSem };
-        // remember last sem raw rows for appending (already uppercased)
         if (semIndex === totalSems) {
+          // store ORIGINAL rows (with stars) for masking & export
           setLastSemRows(rows);
           setLastSemSheetName(wsName);
         }
-        // recompute merged after state copy made
         setTimeout(() => recomputeMerged(next), 0);
         return next;
       });
 
-      // if this was the LAST semester, immediately build & download final file
+      // auto-download on last sem upload
       if (semIndex === totalSems) {
         setTimeout(() => downloadFinal(), 50);
       }
@@ -133,8 +169,6 @@ const CgpaCalculationPage = ({ setCourse, course }) => {
     }
   };
 
-  // Weighted CGPA for one student across all uploaded sems:
-  // CGPA = (Σ total_credit_point) / (Σ total_credit)
   function computeCgpaWeightedForReg(reg) {
     let sumCredits = 0;
     let sumCreditPoints = 0;
@@ -158,35 +192,48 @@ const CgpaCalculationPage = ({ setCourse, course }) => {
       alert("Upload the last semester sheet before finalizing.");
       return null;
     }
-    // find the student key on the LAST sheet
     const studentKey = findStudentKey(Object.keys(lastSemRows[0]));
     if (!studentKey) {
       alert("Could not find REGN_NO/RROLL/ROLL_NO on the last semester sheet.");
       return null;
     }
 
-    // Resolve headers on the last-sem sheet (for masking check)
     const headerMapLast = resolveHeaderMapFromRows(lastSemRows);
-
     const semIdxs = Object.keys(semResults).map(Number).sort((a, b) => a - b);
 
     const out = lastSemRows.map((row) => {
       const reg = row[studentKey];
       const copy = { ...row };
 
-      // Append SGPA per sem (from merged view, for visibility)
-      const semObj = merged[reg]; // { sem1, sem2, ... } = sgpa per sem
-      for (const s of semIdxs) {
-        copy[`SGPA_SEM_${s}`] = semObj?.[`sem${s}`] ?? "";
+      const semObj = merged[reg];
+      const { sumCredits, sumCreditPoints, cgpa } =
+        computeCgpaTotalsForReg(reg, semResults);
+
+      // ✅ If ANY column in this student's last-sem row has '*', we mask
+      const hasStarAnywhere = rowHasAnyStar(row);
+      const shouldMask = hasStarAnywhere || shouldMaskCgpa(copy, headerMapLast);
+
+      if (shouldMask) {
+        // ❌ Do NOT show SGPA or CGPA for such students
+        for (const s of semIdxs) {
+          copy[`SGPA_SEM_${s}`] = "";
+        }
+        copy["TOTAL_CGPA_CREDITS"] = "";
+        copy["TOTAL_CGPA_CREDIT_POINTS"] = "";
+        // keep your existing convention: CGPA = 0 (you can change to "" if you like)
+        copy["CGPA"] = "";
+      } else {
+        // ✅ Normal students – append SGPA per sem + CGPA totals
+        for (const s of semIdxs) {
+          copy[`SGPA_SEM_${s}`] = semObj?.[`sem${s}`] ?? "";
+        }
+        copy["TOTAL_CGPA_CREDITS"] = sumCredits || "";
+        copy["TOTAL_CGPA_CREDIT_POINTS"] = sumCreditPoints || "";
+        copy["CGPA"] = cgpa ?? "";
       }
 
-      // If GRAND_TOT_MRKS or TOT_MRKS are masked (***, ***** ...), force CGPA = "***"
-      if (shouldMaskCgpa(copy, headerMapLast)) {
-        copy["CGPA"] = "***";
-      } else {
-        // Weighted CGPA (Σ tcp / Σ tc)
-        copy["CGPA"] = computeCgpaWeightedForReg(reg) ?? "";
-      }
+      // 🔚 Final step: strip '*' from the exported data (all columns)
+      sanitizeAsterisksInPlace([copy]);
 
       return copy;
     });
@@ -196,12 +243,32 @@ const CgpaCalculationPage = ({ setCourse, course }) => {
 
   function downloadFinal() {
     const rows = buildFinalRows();
-    if (!rows) return;
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(rows, { skipHeader: false });
-    XLSX.utils.book_append_sheet(wb, ws, lastSemSheetName || "Final");
-    const fileName = `${course || "Course"}_CGPA_Final.xlsx`;
-    XLSX.writeFile(wb, fileName);
+    if (!rows || !rows.length) return;
+
+    // Derive a stable header order from the first row
+    const headers = Object.keys(rows[0] || {});
+
+    // Build a sheet using that header order
+    const ws = XLSX.utils.json_to_sheet(rows, { header: headers, skipHeader: false });
+
+    // Convert to CSV
+    const csv = XLSX.utils.sheet_to_csv(ws);
+
+    // Create a CSV blob with BOM for Excel compatibility
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+
+    // Decide a filename (CSV)
+    const fileName = `${course || "Course"}_CGPA_Final.csv`;
+
+    // Trigger download
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -248,7 +315,11 @@ const CgpaCalculationPage = ({ setCourse, course }) => {
             );
           })}
 
-          <button className="primary-button mt-2" type="button" onClick={downloadFinal}>
+          <button
+            className="primary-button mt-2"
+            type="button"
+            onClick={downloadFinal}
+          >
             Download Final Now
           </button>
         </div>
