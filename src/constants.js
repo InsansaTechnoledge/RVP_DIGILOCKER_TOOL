@@ -74,9 +74,9 @@ export const buttons = [
     {
         name: 'Others...'
     },
-    {
-        name: 'Count Students'
-    }
+    // {
+    //     name: 'Count Students'
+    // }
     
   
 ]

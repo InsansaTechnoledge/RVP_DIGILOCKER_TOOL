@@ -120,9 +120,9 @@ const App = () => {
             {
               page.page === 'API INTEGRATION' && <API_INTEGRATION/>
             }
-            {
+            {/* {
               page.page === 'Count Students' && <StudentsCounter/>
-            }
+            } */}
           </main>
 
           {/* Toast (kept above bottom bar) */}

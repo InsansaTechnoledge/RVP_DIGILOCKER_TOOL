@@ -416,8 +416,8 @@ export default function NadTransformer() {
     nad_row["ORG_NAME"] = cleanValue(row["ORG_NAME"]);
 
     // Course Details - Mandatory
-    // nad_row["ACADEMIC_COURSE_ID"] = cleanValue(row["ACADEMIC_COURSE_ID"]);
-    nad_row["ACADEMIC_COURSE_ID"] = '';
+    nad_row["ACADEMIC_COURSE_ID"] = cleanValue(row["ACADEMIC_COURSE_ID"]);
+    // nad_row["ACADEMIC_COURSE_ID"] = '';
 
     // IMPORTANT: override COURSE_NAME with selectedCourse
     nad_row["COURSE_NAME"] = selectedCourse || cleanValue(row["COURSE_NAME"]);
@@ -425,7 +425,10 @@ export default function NadTransformer() {
     nad_row["ADMISSION_YEAR"] = cleanValue(row["ADMISSION_YEAR"]);
     nad_row["STREAM"] = cleanValue(row["STREAM"]);
     nad_row["BATCH"] = cleanValue(row["BATCH"]);
-    nad_row["ABC_ACCOUNT_ID"] = cleanValue(row["ABC_ACCOUNT_ID"] || row["ABCID"]);
+    // nad_row["ABC_ACCOUNT_ID"] = cleanValue(row["ABC_ACCOUNT_ID"] || row["ABCID"]);
+
+    nad_row["ABC_ACCOUNT_ID"] = '';
+    
     nad_row["SESSION"] = cleanValue(row["SESSION"]);
 
     // Student Details - Mandatory
